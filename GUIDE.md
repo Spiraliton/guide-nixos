@@ -97,16 +97,25 @@ sync
 ```sh
 # Become root for the whole install.
 sudo -i
-
-# (Optional) set your console keyboard layout, e.g. Italian:
-loadkeys it
-
-# Stop the screen from blanking / the machine from sleeping mid-install:
-setterm -blank 0 -powersave off
 ```
 
-Also open **System Settings → Power Management** in the live desktop and set it
-to never sleep — a long build interrupted by suspend is painful.
+In the **Plasma live desktop** (i.e. inside Konsole), set the keyboard layout and
+sleep behaviour through the GUI: **System Settings → Keyboard** for the layout,
+and **System Settings → Power Management** set to never sleep — a long build
+interrupted by suspend is painful.
+
+The next two commands only make sense in a **bare TTY** (a text virtual console,
+e.g. one you reach with `Ctrl+Alt+F3`, or the minimal ISO with no desktop). They
+have **no effect inside Konsole/a graphical terminal**, so skip them if you're on
+the Plasma desktop:
+
+```sh
+# (TTY only) set the console keyboard layout, e.g. Italian:
+loadkeys it
+
+# (TTY only) stop the text console from blanking / powersaving:
+setterm -blank 0 -powersave off
+```
 
 ---
 
@@ -355,11 +364,65 @@ above.
 > passphrase prompt in GRUB *and* in the initrd. systemd-boot is recommended
 > instead.
 
+#### Variant: installing onto an **external USB SSD** (encrypted)
+
+Same as the encrypted layout above, but the target is an SSD in a USB enclosure
+that you want to carry between machines and boot from a USB port. Three things
+change; everything else (LUKS → LVM → Btrfs, ESP at `/boot`, systemd-boot) stays
+identical.
+
+**1 — Identify the disk by a stable path, not `/dev/sdX`.** USB device letters
+(`/dev/sda`, `/dev/sdb`, …) are handed out in probe order and can move between
+boots — dangerous when the wrong one gets wiped. Point `_disko.nix` at the
+`by-id` path, which always names the same physical disk:
+
+```sh
+ls -l /dev/disk/by-id/ | grep -i usb      # find your enclosure, e.g. usb-Samsung_Portable_SSD-0:0
+```
+
+```nix
+# in _disko.nix — replace the device line
+device = "/dev/disk/by-id/usb-<your-enclosure-id>";   # NOT /dev/sda
+```
+
+**2 — Make it boot on *any* machine (removable install).** For an internal disk
+you let the installer register this machine's firmware boot entry
+(`canTouchEfiVariables = true`). A portable disk should **not** write an entry
+into every machine's NVRAM, so set it to `false`. systemd-boot still installs the
+removable fallback loader (`EFI/BOOT/BOOTX64.EFI`) onto the ESP, so the disk
+boots through any firmware's "boot from USB" menu:
+
+```nix
+  # configuration.nix — external/portable encrypted disk (use INSTEAD of the 6b block)
+  boot.loader.systemd-boot.enable = true;
+  boot.loader.efi.efiSysMountPoint = "/boot";
+  boot.loader.efi.canTouchEfiVariables = false;   # ← false for a portable USB disk
+```
+
+**3 — Put USB-storage drivers in the initrd** so the encrypted root on the USB
+disk is reachable before the system comes up. The hardware scan (step 8) usually
+catches these because you are *already* booted from USB, but make sure the
+`boot.initrd.availableKernelModules` list in `_hardware.nix` contains at least:
+
+```nix
+  boot.initrd.availableKernelModules = [ "xhci_pci" "ehci_pci" "usb_storage" "uas" "sd_mod" ];
+```
+
+> On the machine you plug it into, open the firmware boot menu and choose the USB
+> disk (you may need to enable USB booting and/or disable Secure Boot first). You
+> are then prompted for the LUKS passphrase exactly as with an internal disk.
+
 ---
 
 ## 7. Set the hostname
 
-Pick the host's name (e.g. `fulgur-nixos`) and set it in **two** places:
+> **Where you are:** steps 7–11 all run in the **live session**, inside the
+> `nixos-config/templates/bootstrap/` directory you cloned and `cd`'d into in
+> step 4. Edit the files right there; the commands below read and write files
+> relative to it.
+
+Pick the host's name (e.g. `fulgur-nixos`) and set it in **two** places (both
+files live in `nixos-config/templates/bootstrap/`):
 
 - `flake.nix` → `hostName = "HOST-nixos";`
 - `configuration.nix` → `networking.hostName = "HOST-nixos";`
@@ -377,11 +440,15 @@ While you're in `configuration.nix`, also review:
 
 ## 8. Generate the hardware configuration
 
+Run this **from `nixos-config/templates/bootstrap/`** — the `>` redirect writes
+`_hardware.nix` into the current directory, next to `_disko.nix`.
+
 This detects kernel modules, CPU microcode, etc. `--no-filesystems` is
 important: Disko owns the filesystem/mount definitions, so we don't want a
 second, conflicting set.
 
 ```sh
+# in nixos-config/templates/bootstrap/
 nixos-generate-config --no-filesystems --show-hardware-config > _hardware.nix
 ```
 
@@ -389,14 +456,24 @@ nixos-generate-config --no-filesystems --show-hardware-config > _hardware.nix
 
 ## 9. Partition, format and mount with Disko
 
-This **destroys all data** on the target disk, creates the partitions, formats
-them and mounts everything under `/mnt`.
+Run this **from `nixos-config/templates/bootstrap/`** (the `./_disko.nix` path is
+relative to it). It **destroys all data** on the target disk, creates the
+partitions, formats them and mounts everything under `/mnt`.
 
 ```sh
+# in nixos-config/templates/bootstrap/
 nix --experimental-features "nix-command flakes" \
   run github:nix-community/disko/latest -- \
   --mode destroy,format,mount ./_disko.nix
 ```
+
+**Why you can't wipe the wrong drive here:** Disko only ever touches the disks
+named on the `device = "…";` lines in `_disko.nix`. `destroy,format` runs against
+*those exact device paths and nothing else* — it does not scan for or reformat
+any other disk, and it never touches the live USB you booted from. So once you've
+confirmed each `device` line points at the intended disk (cross-check the names
+against `lsblk`, or use a `/dev/disk/by-id/…` path so it can't drift), your other
+drives are safe by construction.
 
 > For the **encrypted** layout, make sure you created `/tmp/secret.key` (step
 > 6b) first — Disko reads it to set the LUKS passphrase.
@@ -418,32 +495,45 @@ You should see `/mnt`, `/mnt/nix`, `/mnt/home`, `/mnt/tmp` and the ESP mounted.
 
 ## 10. (Optional) Swap on Btrfs
 
-The full hosts add swap via `addax.swapfile` (see
-[`modules/swapfile.nix`](../../modules/swapfile.nix)), which creates
-`/var/lib/swapfile`. On **Btrfs** a swapfile must have **copy-on-write
-disabled** or the kernel refuses it. NixOS handles this for
-`swapDevices`-managed swapfiles, but if you ever create one by hand:
+**Most of the time you do nothing here.** On the finished system the full hosts
+declare swap with `addax.swapfile` (see
+[`modules/swapfile.nix`](../../modules/swapfile.nix)); NixOS then creates
+`/var/lib/swapfile` at activation and already disables copy-on-write for it. So
+swap is automatic once you're on the full config.
+
+**When you'd add one by hand:** the *bootstrap* flake sets up **no swap**, so
+there is none during the install itself. On a **low-RAM machine**, a big step —
+building the closure, or `nixos-install` — can run out of memory and get
+OOM-killed. Adding a temporary swapfile in the live/target system before that
+step gives the build somewhere to spill.
+
+The extra dance below exists because **Btrfs stores a swapfile copy-on-write by
+default, and the kernel refuses to `swapon` a CoW / compressed / multi-extent
+file** (`swapon: Invalid argument`). You must disable CoW on the *empty* file
+*before* writing any bytes, then allocate it contiguously:
 
 ```sh
 truncate -s 0 /var/lib/swapfile
-chattr +C /var/lib/swapfile      # disable CoW BEFORE writing data
+chattr +C /var/lib/swapfile      # disable CoW BEFORE the file has any data
 fallocate -l 16G /var/lib/swapfile
 chmod 600 /var/lib/swapfile
 mkswap /var/lib/swapfile
+swapon /var/lib/swapfile         # activate it for the current session
 ```
 
-You can leave swap out of the bootstrap and add it when you move to the full
-host config (`(swapfile 16)` / `(swapfile 32)`).
+You can otherwise leave swap out of the bootstrap entirely and let the full host
+config add it (`(swapfile 16)` / `(swapfile 32)`).
 
 ---
 
 ## 11. Install the bootstrap system
 
-Flakes only see files that Git tracks, so initialise a repo in the install
-target and stage everything, then install.
+Still in the live session. Flakes only see files that Git tracks, so copy the
+bootstrap flake into the install target, initialise a repo there, stage
+everything, then install.
 
 ```sh
-# Copy the bootstrap flake into the installer target.
+# Run the `cp` from nixos-config/templates/bootstrap/ — `.` is that directory.
 mkdir -p /mnt/etc/nixos
 cp -r . /mnt/etc/nixos/
 cd /mnt/etc/nixos
@@ -456,6 +546,14 @@ nixos-install \
   --option extra-experimental-features "nix-command flakes pipe-operators" \
   --flake .#<HOST>
 ```
+
+**Why you can't install onto the wrong partition:** `nixos-install` is not given
+a target disk — it installs into whatever is mounted under **`/mnt`** (its
+`--root` defaults to `/mnt`). Disko already mounted the correct filesystems there
+in step 9, so the pieces land where those mounts point: the Nix store on
+`/mnt/nix`, `/home` on `/mnt/home`, the bootloader on the ESP at `/mnt/boot` (or
+`/mnt/boot/efi`), and so on. If the mount tree you checked in step 9 was right,
+the install target is right — there is no separate device to get wrong.
 
 At the end, `nixos-install` prompts for the **root password**. Set it.
 
@@ -485,6 +583,16 @@ passwd adda
 ---
 
 ## 13. Bring the repo into your home and clone the full config
+
+**So far:** you partitioned (and optionally encrypted) the disk, installed a
+minimal *bootstrap* system, rebooted into it, and set passwords. You're now
+logged into the new machine — the live ISO is done.
+
+**From here on** you work from your home directory instead of `/etc/nixos`, and
+you build the **full** configuration rather than the bootstrap flake. This step
+copies the config into `~/.nixos-config` and takes ownership of it; the following
+steps then generate your keys, wire up secrets, and switch the machine over to
+its full host configuration.
 
 ```sh
 # Copy the installed config out of /etc/nixos and take ownership.
@@ -717,6 +825,45 @@ after which systemd-boot loads the kernel from the unencrypted ESP.
 > **Back up your LUKS header and keep a recovery key** before trusting the
 > machine — see [Appendix C](#appendix-c--luks-safety-header-backup--recovery).
 
+#### External USB SSD host — two more things
+
+The external-disk variant (step 6b → "external USB SSD") needs a bit more here,
+because two of its settings lived in the bootstrap `configuration.nix` /
+`_hardware.nix`, and you leave both of those behind when you switch to the full
+config. Fold them into the host's `_boot.nix` so they persist:
+
+```nix
+# modules/hosts/<HOST>/_boot.nix  (external USB SSD variant)
+{
+  boot.loader = {
+    grub.enable              = false;
+    systemd-boot.enable      = true;
+    efi.efiSysMountPoint     = "/boot";
+    efi.canTouchEfiVariables = false;   # ← false (not true): keep it portable/removable
+  };
+
+  # Keep USB-storage drivers in the initrd HERE, durably — `_hardware.nix` is
+  # auto-generated and a later `nixos-generate-config` would drop manual edits.
+  boot.initrd.availableKernelModules = [ "xhci_pci" "ehci_pci" "usb_storage" "uas" "sd_mod" ];
+}
+```
+
+- `canTouchEfiVariables = false` is the one real difference from the internal
+  `_boot.nix` above (`true`). Without it, each machine you plug into gets a boot
+  entry written to its firmware; with it, systemd-boot's removable fallback
+  (`EFI/BOOT/BOOTX64.EFI`) keeps the disk bootable anywhere via the USB boot menu.
+- The `availableKernelModules` list merges with the one in `_hardware.nix` (it's
+  an additive list), so having it in both is fine and guarantees the USB drivers
+  are always in the initrd.
+
+> **Booting it on more than one machine?** Then in `system.nix` do **not** import
+> a machine-specific `nixos-hardware` profile (e.g. `lenovo-thinkpad-t14-amd-gen4`)
+> — it would apply one laptop's quirks everywhere. Also note `_hardware.nix` is
+> tailored to the machine you generated it on (CPU microcode, `kvm-intel` vs
+> `kvm-amd`, GPU modules); for a truly cross-machine stick you may want to
+> broaden it or drop the CPU/GPU-specific bits. For a single-machine external
+> boot, the normal host setup is fine as-is.
+
 ---
 
 ## 17. (Optional) Use a remote builder for weak machines
@@ -749,6 +896,14 @@ nixos-rebuild boot --flake .#<HOST> --target-host <HOST> --sudo --ask-sudo-passw
 ---
 
 ## Appendix A — `nixos-enter` to repair an installed Btrfs system
+
+**When you need this:** the machine is already installed but won't boot or needs
+fixing from outside — a broken bootloader, a bad configuration that fails to
+activate, a forgotten root password, or a file you need to edit before it will
+come up. You boot the live ISO again and `nixos-enter` chroots you *into* the
+on-disk system so you can run commands as if you had booted it normally. The
+mounts have to be recreated by hand first, because the live ISO knows nothing
+about your Disko layout (and, for the encrypted layout, the disk is still locked).
 
 If you need to chroot back into the installed system from the live ISO:
 
