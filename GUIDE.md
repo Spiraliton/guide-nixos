@@ -619,21 +619,38 @@ minimal *bootstrap* system, rebooted into it, and set passwords. You're now
 logged into the new machine — the live ISO is done.
 
 **From here on** you work from your home directory instead of `/etc/nixos`, and
-you build the **full** configuration rather than the bootstrap flake. This step
-copies the config into `~/.nixos-config` and takes ownership of it; the following
-steps then generate your keys, wire up secrets, and switch the machine over to
-its full host configuration.
+you build the **full** configuration rather than the bootstrap flake. So this
+step does two things: it **clones the full repo** from Codeberg into
+`~/.nixos-config`, and it **rescues the two machine-specific files you generated
+during install** — your edited `_disko.nix` and the scanned `_hardware.nix`.
+Those live in `/etc/nixos` on this machine (that's the bootstrap flake you
+installed from); the fresh clone only has the *generic* templates, so you must
+carry your real ones across into the new host's directory.
 
 ```sh
-# Copy the installed config out of /etc/nixos and take ownership.
-cp -r -a /etc/nixos/* ~/.nixos-config/ 2>/dev/null || \
-  nix-shell -p git --run "git clone https://codeberg.org/Adda/nixos-config ~/.nixos-config"
-sudo chown -R "$USER" ~/.nixos-config
+# 1. Clone the FULL configuration repo (not just the bootstrap flake) into home.
+nix-shell -p git --run "git clone https://codeberg.org/Adda/nixos-config ~/.nixos-config"
 cd ~/.nixos-config
+
+# 2. Rescue your generated machine files from /etc/nixos into the new host dir.
+#    <HOST> = the hostname you chose in step 7 (e.g. fulgur-nixos).
+mkdir -p modules/hosts/<HOST>
+sudo cp /etc/nixos/_disko.nix    modules/hosts/<HOST>/_disko.nix
+sudo cp /etc/nixos/_hardware.nix modules/hosts/<HOST>/_hardware.nix
+
+# 3. Take ownership (the clone is already yours; the /etc/nixos copies come in as root).
+sudo chown -R "$USER" ~/.nixos-config
 ```
 
-Keep the machine-specific `_disko.nix` and `_hardware.nix` you just made — you
-will drop them into the new host directory in step 16.
+> **`git clone` needs the target to be empty or non-existent.** If a previous
+> attempt left a partial `~/.nixos-config`, step 1 fails with *"destination path
+> '…' already exists and is not an empty directory"*. Clear it first —
+> `rm -rf ~/.nixos-config` — then re-run, or clone to a temporary path and move it
+> into place.
+
+Your machine-specific `_disko.nix` / `_hardware.nix` now sit in
+`modules/hosts/<HOST>/`, ready for step 16. The repo's `templates/bootstrap/`
+files stay pristine (they're the generic templates, not your machine's).
 
 ---
 
@@ -736,12 +753,22 @@ and set, under `programs.git`:
 
 ## 16. Register the host and switch to the full configuration
 
-1. Create `modules/hosts/<HOST>/` and copy your two machine files into it:
+1. Confirm your host directory already holds the two machine files you rescued in
+   step 13:
+
+   ```sh
+   ls modules/hosts/<HOST>/     # → _disko.nix  _hardware.nix
+   ```
+
+   If they're missing (you skipped that part of step 13), copy them now from
+   `/etc/nixos` — **not** from `templates/bootstrap/`, whose copies are the
+   generic templates, not your machine's:
 
    ```sh
    mkdir -p modules/hosts/<HOST>
-   cp ~/.nixos-config/templates/bootstrap/_disko.nix    modules/hosts/<HOST>/_disko.nix
-   cp ~/.nixos-config/templates/bootstrap/_hardware.nix modules/hosts/<HOST>/_hardware.nix
+   sudo cp /etc/nixos/_disko.nix    modules/hosts/<HOST>/_disko.nix
+   sudo cp /etc/nixos/_hardware.nix modules/hosts/<HOST>/_hardware.nix
+   sudo chown "$USER" modules/hosts/<HOST>/_disko.nix modules/hosts/<HOST>/_hardware.nix
    ```
 
 2. Add a `system.nix` for the host, modelled on an existing one such as
