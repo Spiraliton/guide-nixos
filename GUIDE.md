@@ -721,14 +721,31 @@ creation_rules:
 
 ### Re-encrypt the secrets for the new keys
 
-From a machine (or this one) that can already decrypt the secrets, rekey them so
-the new host's keys are included:
+Two gotchas here on a fresh machine:
+
+- **`sops` isn't installed yet.** The bootstrap system doesn't ship it — it's
+  the full config (`modules/aspects/security/sops.nix`) that adds `sops`, `age`
+  and `ssh-to-age`, and that only takes effect after step 16. So run `sops` via
+  `nix-shell`, **not** the `just sops-update` recipe (which calls a bare `sops`
+  and fails with `Command 'sops' not found`). The `just` shortcut works once
+  you're on the full system.
+- **`updatekeys` must decrypt the file first**, using a key that is *already* a
+  current recipient. This machine's freshly generated keys are **not** yet
+  recipients, so the rekey has to run on an **existing trusted machine**
+  (`mensa-nixos`, `nomen-nixos`, …) that can already decrypt — then you `git
+  pull` the re-encrypted file here.
 
 ```sh
-just sops-update           # → sops updatekeys --yes secrets/*
+# On a machine that can already decrypt the secrets (after adding this host's
+# new age keys to .sops.yaml and committing):
+nix-shell -p sops --run "sops updatekeys --yes secrets/secrets.yaml"
+
+# Later, once THIS machine is on the full config (step 16), the shortcut works:
+#   just sops-update
 ```
 
-If you're starting the secrets from scratch instead:
+If this is your only machine and nothing can decrypt the existing secret yet,
+start it over from scratch instead (you lose the old value):
 
 ```sh
 rm -f ~/.nixos-config/secrets/*
