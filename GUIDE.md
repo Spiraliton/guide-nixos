@@ -557,6 +557,25 @@ the install target is right — there is no separate device to get wrong.
 
 At the end, `nixos-install` prompts for the **root password**. Set it.
 
+> **If it fails with `error: unknown setting 'lazy-trees'` / `'submodules'`**
+> (right after `Validating generated nix.conf`): those two keys in `nix.settings`
+> are Lix / very-recent-Nix settings the installer's Nix doesn't recognise, and
+> `nix.checkConfig` (on by default) turns that into a hard build failure. Comment
+> them out in `configuration.nix` (they ship commented in the current template),
+> then re-stage and re-install:
+>
+> ```sh
+> # in /mnt/etc/nixos, edit configuration.nix so these two lines under
+> # nix.settings are commented:  # lazy-trees = true;   # submodules = true;
+> nano configuration.nix
+> git add -A            # flakes read the (tracked) working tree — re-stage the edit
+> nixos-install --option extra-experimental-features "nix-command flakes pipe-operators" --flake .#<HOST>
+> ```
+>
+> Quick escape hatch instead of editing: add `nix.checkConfig = false;` — but
+> that only silences validation and leaves the bogus settings in `nix.conf`;
+> removing them is cleaner.
+
 > On a very weak machine, don't build the whole thing locally — install just
 > this bootstrap flake now, then use a remote builder for the full config
 > (see step 17).
@@ -573,12 +592,23 @@ Remove the USB stick when it powers down. For the **encrypted** layout you'll be
 asked for your LUKS passphrase early in boot — that's the initrd unlocking
 `cryptssd`.
 
-Log in as `adda` (or root) and set passwords if you didn't already:
+So far only **root** has a password — you set it at the end of `nixos-install`.
+The `adda` account has **no password yet**, so you **cannot log in as `adda`** at
+the Plasma login screen. You must log in as **root** first and give `adda` a
+password.
+
+The graphical login manager only lists normal users, so switch to a **text
+console** to reach root: press **`Ctrl+Alt+F3`** (try `F2`–`F6` if that one is
+busy), then:
 
 ```sh
-passwd root
-passwd adda
+# Log in as: root   (using the password you set during nixos-install)
+passwd adda          # set adda's password
+# passwd             # optionally change root's own password too
 ```
+
+Then return to the graphical login with **`Ctrl+Alt+F1`** (or `F7`) and log in as
+`adda`.
 
 ---
 
